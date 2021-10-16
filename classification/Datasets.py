@@ -1,7 +1,9 @@
-from torch.utils.data import Dataset
+from typing import Any, Callable, List, Optional, Union
+
+# import numpy as np
+# from tensorflow.keras.utils import Sequence
 from torch import tensor
-from tensorflow.keras.utils import Sequence
-import numpy as np
+from torch.utils.data import Dataset
 
 
 class TorchSimpleTextDataset(Dataset):
@@ -18,7 +20,11 @@ class TorchSimpleTextDataset(Dataset):
     """
 
     def __init__(
-        self, texts: list, labels: list, tokenizer=None, target_transform=None
+        self,
+        texts: List[str],
+        labels: List[Union[str, int]],
+        tokenizer: Optional[Callable[[str], Any]] = None,
+        target_transform: Optional[Callable] = None,
     ):
 
         self.texts = texts
@@ -34,7 +40,10 @@ class TorchSimpleTextDataset(Dataset):
         text, label = self.texts[idx], self.labels[idx]
 
         if self.tokenizer:
-            text = tensor(self.tokenizer.encode(text))
+            # not necessarily text (a string) anymore
+            # just to avoid a new variable declaration
+            # and some checks
+            text = self.tokenizer(text)
 
         if self.target_transform:
             label = self.target_transform(label)
@@ -42,67 +51,81 @@ class TorchSimpleTextDataset(Dataset):
         return text, label
 
 
-class TFSimpleTextDataset(Sequence):
+# class TFSimpleTextDataset(Sequence):
+
+#     """
+#     Simple Dataset object for text (tensorflow based).
+#     Reference: https://www.tensorflow.org/api_docs/python/tf/keras/utils/Sequence
+
+#     Arguments:
+#         texts: list of texts;
+#         labels: list of labels;
+#         tokenizer: tokenizer function;
+#         target_transform: function to apply on raw label;
+#     """
+
+#     def __init__(
+#         self,
+#         texts: list,
+#         labels: list,
+#         batch_size: int = 32,
+#         tokenizer=None,
+#         target_transform=None,
+#     ):
+#         self.texts = texts
+#         self.labels = labels
+#         self.tokenizer = tokenizer
+#         self.target_transform = target_transform
+#         self.batch_size = batch_size
+
+#     def __len__(self):
+#         return int(np.ceil(len(self.texts) / self.batch_size))
+
+#     def __getitem__(self, idx):
+
+#         start_idx = idx * self.batch_size
+#         end_idx = start_idx + self.batch_size
+
+#         batch_texts = self.texts[start_idx:end_idx]
+#         batch_labels = self.labels[start_idx:end_idx]
+
+#         if self.tokenizer:
+#             batch_texts = [self.tokenizer.encode(text) for text in batch_texts]
+
+#         if self.target_transform:
+#             batch_labels = [self.target_transform(label) for label in batch_labels]
+
+#         return np.array(batch_texts), np.array(batch_labels)
+
+
+class HFSimpleTextDataset(Dataset):
 
     """
-    Simple Dataset object for text (tensorflow based).
-    Reference: https://www.tensorflow.org/api_docs/python/tf/keras/utils/Sequence
+    Simple Dataset object for text (hugging face based model especifically).
+    Reference: https://huggingface.co/course/chapter3/3?fw=pt
 
     Arguments:
-        texts: list of texts;
+        tokenized_texts: dict containing necessary keys for hugging face model (input_ids, token_type_ids and attention_mask);
         labels: list of labels;
-        tokenizer: tokenizer function;
-        target_transform: function to apply on raw label;
     """
 
     def __init__(
         self,
-        texts: list,
-        labels: list,
-        batch_size: int = 32,
-        tokenizer=None,
-        target_transform=None,
+        tokenized_texts: dict,
+        labels: Optional[List[int]] = None,
     ):
-        self.texts = texts
+
+        self.tokenized_texts = tokenized_texts
         self.labels = labels
-        self.tokenizer = tokenizer
-        self.target_transform = target_transform
-        self.batch_size = batch_size
 
     def __len__(self):
-        return int(np.ceil(len(self.texts) / self.batch_size))
+        return len(self.tokenized_texts["input_ids"])
 
     def __getitem__(self, idx):
 
-        start_idx = idx * self.batch_size
-        end_idx = start_idx + self.batch_size
-
-        batch_texts = self.texts[start_idx:end_idx]
-        batch_labels = self.labels[start_idx:end_idx]
-
-        if self.tokenizer:
-            batch_texts = [self.tokenizer.encode(text) for text in batch_texts]
-
-        if self.target_transform:
-            batch_labels = [self.target_transform(label) for label in batch_labels]
-
-        return np.array(batch_texts), np.array(batch_labels)
-
-class SimpleTextDataset(Dataset):
-
-    def __init__(self, tokenized_text, labels=None):
-        
-        self.tokenized_text = tokenized_text
-        self.labels = labels
-
-    def __getitem__(self, idx):
-
-        item = {key: tensor(val[idx]) for key, val in self.tokenized_text.items()}
-        
+        # retrieve an item
+        item = {key: tensor(val[idx]) for key, val in self.tokenized_texts.items()}
         if self.labels:
             item["labels"] = tensor(self.labels[idx])
-        
-        return item
 
-    def __len__(self):
-        return len(self.tokenized_text["input_ids"])
+        return item
