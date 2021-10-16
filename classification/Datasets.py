@@ -87,3 +87,22 @@ class TFSimpleTextDataset(Sequence):
             batch_labels = [self.target_transform(label) for label in batch_labels]
 
         return np.array(batch_texts), np.array(batch_labels)
+
+class SimpleTextDataset(Dataset):
+
+    def __init__(self, tokenized_text, labels=None):
+        
+        self.tokenized_text = tokenized_text
+        self.labels = labels
+
+    def __getitem__(self, idx):
+
+        item = {key: tensor(val[idx]) for key, val in self.tokenized_text.items()}
+        
+        if self.labels:
+            item["labels"] = tensor(self.labels[idx])
+        
+        return item
+
+    def __len__(self):
+        return len(self.tokenized_text["input_ids"])
