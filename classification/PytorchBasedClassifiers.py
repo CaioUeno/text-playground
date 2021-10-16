@@ -1,13 +1,146 @@
-from typing import Optional
+from typing import Callable, List, Optional, Tuple
+
 import numpy as np
-from tqdm import tqdm
-from torch import nn, cat, device, no_grad, flatten
+import torch.nn.functional as F
+from torch import cat, device, flatten, nn, no_grad, tensor
 from torch.cuda import is_available
 from torch.utils.data import DataLoader
-import torch.nn.functional as F
+from tqdm import tqdm
 
 
-class BiLSTMClassifier(nn.Module):
+class BaseClassifier(nn.Module):
+
+    """
+    Abstract class to define fit and predict methods.
+    """
+
+    def fit(
+        self,
+        train_iterator: DataLoader,
+        loss_function: Callable,
+        optimizer: Callable,
+        metrics: Optional[List[Callable[[tensor, tensor], tensor]]] = None,
+        val_iterator: Optional[DataLoader] = None,
+        epochs: int = 1,
+        verbose: bool = True,
+    ) -> Tuple[dict, Optional[dict]]:
+        """
+        General purpose fit method.
+
+        Arguments:
+            train_iterator: DataLoader iterator with training data;
+            val_iterator: DataLoader iterator with validation data;
+            epochs: number of epochs to train;
+            loss_function: loss function to evaluate error;
+            optimizer: optimizer to apply backpropagation (must already be initialized with model's parameters);
+            verbose: boolean flag to indicate verbose level (show tqdm or not);
+
+        Returns:
+            loss: numpy array with epochs' losses;
+            train_accuracy: numpy array with model's accuracy on training data for each epoch;
+            val_accuracy: numpy array with model's accuracy on validation data for each epoch if val_iterator passed.
+        """
+
+        # at least loss is returned
+        metrics = [loss_function].extend(metrics)
+        train_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
+        val_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
+
+        for epoch in tqdm(range(epochs), unit="epoch") if verbose else range(epochs):
+
+            self.train()  # training mode
+
+            if metrics:
+                epoch_train_preds = []  # store predictions of entire training set
+                epoch_train_labels = []  # store true labels of entire training set
+
+            for batch_texts, batch_labels in train_iterator:
+
+                optimizer.zero_grad()
+
+                preds = self(batch_texts.to(self.device))
+
+                batch_loss = loss_function(preds, batch_labels.to(self.device))
+                batch_loss.backward()
+
+                optimizer.step()
+
+                epoch_train_preds.append(preds.to("cpu"))
+                epoch_train_labels.append(batch_labels.to("cpu"))
+
+            # list -> tensor
+            epoch_train_preds = cat(epoch_train_preds, dim=0)
+            epoch_train_labels = cat(epoch_train_labels, dim=0)
+
+            # calculate each metric value at epoch level
+            for metric in metrics:
+                train_metrics[metric.__name__][epoch] = metrics(
+                    epoch_train_labels, epoch_train_preds
+                )
+
+            # if a validation set was passed
+            if val_iterator:
+
+                self.eval()  # evaluation mode
+
+                epoch_val_preds = []  # store predictions of entire validation set
+                epoch_val_labels = []  # store true labels of entire validation set
+
+                with no_grad():
+                    for batch_texts, batch_labels in val_iterator:
+                        preds = self(batch_texts.to(self.device))
+                        epoch_val_preds.append(preds.to("cpu"))
+                        epoch_val_labels.append(batch_labels.to("cpu"))
+
+                # list -> tensor
+                epoch_val_preds = cat(epoch_val_preds, dim=0)
+                epoch_val_labels = cat(epoch_val_labels, dim=0)
+
+                # calculate each metric value at epoch level
+                for metric in metrics:
+                    val_metrics[metric.__name__][epoch] = metrics(
+                        epoch_val_labels, epoch_val_preds
+                    )
+
+        if val_iterator:
+            return train_metrics, val_metrics
+        else:
+            return train_metrics
+
+    def predict(self, eval_iterator: DataLoader, verbose: bool = True):
+
+        """
+        Predict data. It returns both pred and true labels to leave to the caller the evaluation metric(s).
+
+        Argument:
+            eval_iterator: DataLoader iterator with test data;
+
+        Returns:
+            true_labels: true labels;
+            preds: predicted labels.
+        """
+
+        self.eval()  # evaluation mode
+        n_instances = len(eval_iterator) * eval_iterator.batch_size
+        true_labels, preds = np.zeros(n_instances), np.zeros(n_instances)
+        with no_grad():
+            for batch, (batch_texts, batch_labels) in (
+                tqdm(enumerate(eval_iterator), unit="batch")
+                if verbose
+                else enumerate(eval_iterator)
+            ):
+                batch_preds = self(batch_texts.to(self.device))
+
+                begin_idx = batch * eval_iterator.batch_size
+                last_idx = begin_idx + len(batch_texts)
+
+                preds[begin_idx:last_idx] = batch_preds.argmax(1)
+                true_labels[begin_idx:last_idx] = batch_labels
+
+        return true_labels, preds
+
+
+class BiLSTMClassifier(BaseClassifier):
 
     """
     Text Classifier using Bidirectional LSTM layers.
@@ -33,7 +166,7 @@ class BiLSTMClassifier(nn.Module):
 
         super(BiLSTMClassifier, self).__init__()
 
-        # useful variables
+        # configs
         self.vocab_size = vocab_size
         self.max_length = max_length
         self.embedding_dim = embedding_dim
@@ -97,129 +230,8 @@ class BiLSTMClassifier(nn.Module):
 
         return self.output(hidden_concat)
 
-    def fit(
-        self,
-        train_iterator: DataLoader,
-        val_iterator: Optional[DataLoader],
-        epochs: int,
-        loss_function,
-        optimizer,
-        verbose: bool = True,
-    ):
-        """
-        Train model.
 
-        Arguments:
-            train_iterator: DataLoader iterator with training data;
-            val_iterator: DataLoader iterator with validation data;
-            epochs: number of epochs to train;
-            loss_function: loss function to evaluate error;
-            optimizer: optimizer to apply backpropagation (must already be initialized with model's parameters);
-            verbose: boolean flag to indicate verbose level (show tqdm or not);
-
-        Returns:
-            loss: numpy array with epochs' losses;
-            train_accuracy: numpy array with model's accuracy on training data for each epoch;
-            val_accuracy: numpy array with model's accuracy on validation data for each epoch if val_iterator passed.
-        """
-
-        loss, train_accuracy, val_accuracy = (
-            np.zeros(epochs),
-            np.zeros(epochs),
-            np.zeros(epochs),
-        )
-        for epoch in tqdm(range(epochs), unit="epoch") if verbose else range(epochs):
-
-            self.train()  # training mode
-            epoch_loss = 0  # calculate epoch loss
-            epoch_accuracy = 0  # calculate epoch accuracy
-
-            for batch_texts, batch_labels in train_iterator:
-
-                optimizer.zero_grad()
-
-                preds = self(batch_texts.to(self.device))
-
-                batch_loss = loss_function(preds, batch_labels.to(self.device))
-                batch_loss.backward()
-
-                optimizer.step()
-
-                epoch_loss += batch_loss.item()
-
-                epoch_accuracy += (
-                    (preds.argmax(1) == batch_labels.to(self.device))
-                    .float()
-                    .sum()
-                    .item()
-                )
-
-            # store epoch loss (mean of batches losses)
-            loss[epoch] = epoch_loss / (len(train_iterator) * train_iterator.batch_size)
-            # store model's accuracy on training set for this epoch
-            train_accuracy[epoch] = epoch_accuracy / (
-                len(train_iterator) * train_iterator.batch_size
-            )
-
-            # if a validation set was passed
-            if val_iterator:
-
-                self.eval()  # evaluation mode
-                accuracy = 0  # calculate model's accuracy on validation set
-                with no_grad():
-                    for batch_texts, batch_labels in val_iterator:
-                        preds = self(batch_texts.to(self.device))
-                        accuracy += (
-                            (preds.argmax(1) == batch_labels.to(self.device))
-                            .float()
-                            .sum()
-                            .item()
-                        )
-
-                # store model's accuracy on validation set for this epoch
-                val_accuracy[epoch] = accuracy / (
-                    len(val_iterator) * val_iterator.batch_size
-                )
-
-        if val_iterator:
-            return loss, train_accuracy, val_accuracy
-        else:
-            return loss, train_accuracy
-
-    def predict(self, eval_iterator: DataLoader, verbose: bool = True):
-
-        """
-        Predict data. It returns both pred and true labels to leave to caller the evaluation metric(s).
-
-        Argument:
-            eval_iterator: DataLoader iterator with test data;
-
-        Returns:
-            true_labels: true labels;
-            preds: predicted labels.
-        """
-
-        self.eval()  # evaluation mode
-        n_instances = len(eval_iterator) * eval_iterator.batch_size
-        true_labels, preds = np.zeros(n_instances), np.zeros(n_instances)
-        with no_grad():
-            for batch, (batch_texts, batch_labels) in (
-                tqdm(enumerate(eval_iterator), unit="batch")
-                if verbose
-                else enumerate(eval_iterator)
-            ):
-                batch_preds = self(batch_texts.to(self.device))
-
-                begin_idx = batch * eval_iterator.batch_size
-                last_idx = begin_idx + len(batch_texts)
-
-                preds[begin_idx:last_idx] = batch_preds.argmax(1)
-                true_labels[begin_idx:last_idx] = batch_labels
-
-        return true_labels, preds
-
-
-class CNNClassifier(nn.Module):
+class CNNClassifier(BaseClassifier):
 
     """
     Text Classifier using 2D-Convolutional layers.
@@ -300,129 +312,8 @@ class CNNClassifier(nn.Module):
         hidden = F.sigmoid(self.hidden(flatten(dropped, 1)))
         return F.softmax(self.output(hidden), dim=1)
 
-    def fit(
-        self,
-        train_iterator: DataLoader,
-        val_iterator: Optional[DataLoader],
-        epochs: int,
-        loss_function,
-        optimizer,
-        verbose: bool = True,
-    ):
-        """
-        Train model.
 
-        Arguments:
-            train_iterator: DataLoader iterator with training data;
-            val_iterator: DataLoader iterator with validation data;
-            epochs: number of epochs to train;
-            loss_function: loss function to evaluate error;
-            optimizer: optimizer to apply backpropagation (must already be initialized with model's parameters);
-            verbose: boolean flag to indicate verbose level (show tqdm or not);
-
-        Returns:
-            loss: numpy array with epochs' losses;
-            train_accuracy: numpy array with model's accuracy on training data for each epoch;
-            val_accuracy: numpy array with model's accuracy on validation data for each epoch if val_iterator passed.
-        """
-
-        loss, train_accuracy, val_accuracy = (
-            np.zeros(epochs),
-            np.zeros(epochs),
-            np.zeros(epochs),
-        )
-        for epoch in tqdm(range(epochs), unit="epoch") if verbose else range(epochs):
-
-            self.train()  # training mode
-            epoch_loss = 0  # calculate epoch loss
-            epoch_accuracy = 0  # calculate epoch accuracy
-
-            for batch_texts, batch_labels in train_iterator:
-
-                optimizer.zero_grad()
-
-                preds = self(batch_texts.to(self.device))
-
-                batch_loss = loss_function(preds, batch_labels.to(self.device))
-                batch_loss.backward()
-
-                optimizer.step()
-
-                epoch_loss += batch_loss.item()
-
-                epoch_accuracy += (
-                    (preds.argmax(1) == batch_labels.to(self.device))
-                    .float()
-                    .sum()
-                    .item()
-                )
-
-            # store epoch loss (mean of batches losses)
-            loss[epoch] = epoch_loss / (len(train_iterator) * train_iterator.batch_size)
-            # store model's accuracy on training set for this epoch
-            train_accuracy[epoch] = epoch_accuracy / (
-                len(train_iterator) * train_iterator.batch_size
-            )
-
-            # if a validation set was passed
-            if val_iterator:
-
-                self.eval()  # evaluation mode
-                accuracy = 0  # calculate model's accuracy on validation set
-                with no_grad():
-                    for batch_texts, batch_labels in val_iterator:
-                        preds = self(batch_texts.to(self.device))
-                        accuracy += (
-                            (preds.argmax(1) == batch_labels.to(self.device))
-                            .float()
-                            .sum()
-                            .item()
-                        )
-
-                # store model's accuracy on validation set for this epoch
-                val_accuracy[epoch] = accuracy / (
-                    len(val_iterator) * val_iterator.batch_size
-                )
-
-        if val_iterator:
-            return loss, train_accuracy, val_accuracy
-        else:
-            return loss, train_accuracy
-
-    def predict(self, eval_iterator: DataLoader, verbose: bool = True):
-
-        """
-        Predict data. It returns both pred and true labels to leave to caller the evaluation metric(s).
-
-        Argument:
-            eval_iterator: DataLoader iterator with test data;
-
-        Returns:
-            true_labels: true labels;
-            preds: predicted labels.
-        """
-
-        self.eval()  # evaluation mode
-        n_instances = len(eval_iterator) * eval_iterator.batch_size
-        true_labels, preds = np.zeros(n_instances), np.zeros(n_instances)
-        with no_grad():
-            for batch, (batch_texts, batch_labels) in (
-                tqdm(enumerate(eval_iterator), unit="batch")
-                if verbose
-                else enumerate(eval_iterator)
-            ):
-                batch_preds = self(batch_texts.to(self.device))
-
-                begin_idx = batch * eval_iterator.batch_size
-                last_idx = begin_idx + len(batch_texts)
-
-                preds[begin_idx:last_idx] = batch_preds.argmax(1)
-                true_labels[begin_idx:last_idx] = batch_labels
-
-        return true_labels, preds
-
-
-class TransformerClassifier(nn.Module):
+class TransformerClassifier(BaseClassifier):
 
     """
     Text Classifier using a Transformer layer followed by a LSTM layer(s).
@@ -511,124 +402,3 @@ class TransformerClassifier(nn.Module):
         hidden = cat((lstm_output[:, :, -1], lstm_output[:, :, -2]), dim=1)
 
         return self.output(hidden)
-
-    def fit(
-        self,
-        train_iterator: DataLoader,
-        val_iterator: Optional[DataLoader],
-        epochs: int,
-        loss_function,
-        optimizer,
-        verbose: bool = True,
-    ):
-        """
-        Train model.
-
-        Arguments:
-            train_iterator: DataLoader iterator with training data;
-            val_iterator: DataLoader iterator with validation data;
-            epochs: number of epochs to train;
-            loss_function: loss function to evaluate error;
-            optimizer: optimizer to apply backpropagation (must already be initialized with model's parameters);
-            verbose: boolean flag to indicate verbose level (show tqdm or not);
-
-        Returns:
-            loss: numpy array with epochs' losses;
-            train_accuracy: numpy array with model's accuracy on training data for each epoch;
-            val_accuracy: numpy array with model's accuracy on validation data for each epoch if val_iterator passed.
-        """
-
-        loss, train_accuracy, val_accuracy = (
-            np.zeros(epochs),
-            np.zeros(epochs),
-            np.zeros(epochs),
-        )
-        for epoch in tqdm(range(epochs), unit="epoch") if verbose else range(epochs):
-
-            self.train()  # training mode
-            epoch_loss = 0  # calculate epoch loss
-            epoch_accuracy = 0  # calculate epoch accuracy
-
-            for batch_texts, batch_labels in train_iterator:
-
-                optimizer.zero_grad()
-
-                preds = self(batch_texts.to(self.device))
-
-                batch_loss = loss_function(preds, batch_labels.to(self.device))
-                batch_loss.backward()
-
-                optimizer.step()
-
-                epoch_loss += batch_loss.item()
-
-                epoch_accuracy += (
-                    (preds.argmax(1) == batch_labels.to(self.device))
-                    .float()
-                    .sum()
-                    .item()
-                )
-
-            # store epoch loss (mean of batches losses)
-            loss[epoch] = epoch_loss / (len(train_iterator) * train_iterator.batch_size)
-            # store model's accuracy on training set for this epoch
-            train_accuracy[epoch] = epoch_accuracy / (
-                len(train_iterator) * train_iterator.batch_size
-            )
-
-            # if a validation set was passed
-            if val_iterator:
-
-                self.eval()  # evaluation mode
-                accuracy = 0  # calculate model's accuracy on validation set
-                with no_grad():
-                    for batch_texts, batch_labels in val_iterator:
-                        preds = self(batch_texts.to(self.device))
-                        accuracy += (
-                            (preds.argmax(1) == batch_labels.to(self.device))
-                            .float()
-                            .sum()
-                            .item()
-                        )
-
-                # store model's accuracy on validation set for this epoch
-                val_accuracy[epoch] = accuracy / (
-                    len(val_iterator) * val_iterator.batch_size
-                )
-
-        if val_iterator:
-            return loss, train_accuracy, val_accuracy
-        else:
-            return loss, train_accuracy
-
-    def predict(self, eval_iterator: DataLoader, verbose: bool = True):
-
-        """
-        Predict data. It returns both pred and true labels to leave to caller the evaluation metric(s).
-
-        Argument:
-            eval_iterator: DataLoader iterator with test data;
-
-        Returns:
-            true_labels: true labels;
-            preds: predicted labels.
-        """
-
-        self.eval()  # evaluation mode
-        n_instances = len(eval_iterator) * eval_iterator.batch_size
-        true_labels, preds = np.zeros(n_instances), np.zeros(n_instances)
-        with no_grad():
-            for batch, (batch_texts, batch_labels) in (
-                tqdm(enumerate(eval_iterator), unit="batch")
-                if verbose
-                else enumerate(eval_iterator)
-            ):
-                batch_preds = self(batch_texts.to(self.device))
-
-                begin_idx = batch * eval_iterator.batch_size
-                last_idx = begin_idx + len(batch_texts)
-
-                preds[begin_idx:last_idx] = batch_preds.argmax(1)
-                true_labels[begin_idx:last_idx] = batch_labels
-
-        return true_labels, preds
