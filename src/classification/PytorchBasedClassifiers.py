@@ -23,7 +23,7 @@ class BaseClassifier(nn.Module):
         val_iterator: Optional[DataLoader] = None,
         epochs: int = 1,
         verbose: bool = True,
-    ) -> Tuple[dict, Optional[dict]]:
+    ) -> Tuple[int, Optional[dict], Optional[dict]]:
         """
         General purpose fit method.
 
@@ -41,8 +41,9 @@ class BaseClassifier(nn.Module):
             val_accuracy: numpy array with model's accuracy on validation data for each epoch if val_iterator passed.
         """
 
-        # at least loss is returned
-        metrics = [loss_function].extend(metrics)
+        # loss is always returned
+        train_loss = 0
+
         train_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
         val_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
 
@@ -50,9 +51,8 @@ class BaseClassifier(nn.Module):
 
             self.train()  # training mode
 
-            if metrics:
-                epoch_train_preds = []  # store predictions of entire training set
-                epoch_train_labels = []  # store true labels of entire training set
+            epoch_train_preds = []  # store predictions of entire training set
+            epoch_train_labels = []  # store true labels of entire training set
 
             for batch_texts, batch_labels in train_iterator:
 
@@ -62,6 +62,7 @@ class BaseClassifier(nn.Module):
 
                 batch_loss = loss_function(preds, batch_labels.to(self.device))
                 batch_loss.backward()
+                train_loss += batch_loss.item()
 
                 optimizer.step()
 
@@ -73,15 +74,20 @@ class BaseClassifier(nn.Module):
             epoch_train_labels = cat(epoch_train_labels, dim=0)
 
             # calculate each metric value at epoch level
+            # ignored if no metrics
             for metric in metrics:
-                train_metrics[metric.__name__][epoch] = metrics(
+                train_metrics[metric.__name__][epoch] = metric(
                     epoch_train_labels, epoch_train_preds
                 )
+
+            # loss at epoch level
+            train_loss = train_loss / (len(train_iterator) * train_iterator.batch_size)
 
             # if a validation set was passed
             if val_iterator:
 
                 self.eval()  # evaluation mode
+                val_loss = 0
 
                 epoch_val_preds = []  # store predictions of entire validation set
                 epoch_val_labels = []  # store true labels of entire validation set
@@ -89,6 +95,9 @@ class BaseClassifier(nn.Module):
                 with no_grad():
                     for batch_texts, batch_labels in val_iterator:
                         preds = self(batch_texts.to(self.device))
+                        val_loss += loss_function(
+                            preds, batch_labels.to(self.device)
+                        ).item()
                         epoch_val_preds.append(preds.to("cpu"))
                         epoch_val_labels.append(batch_labels.to("cpu"))
 
@@ -96,16 +105,20 @@ class BaseClassifier(nn.Module):
                 epoch_val_preds = cat(epoch_val_preds, dim=0)
                 epoch_val_labels = cat(epoch_val_labels, dim=0)
 
-                # calculate each metric value at epoch level
+                # calculate each metric value for the entire validation set
+                # ignored if no metrics
                 for metric in metrics:
-                    val_metrics[metric.__name__][epoch] = metrics(
+                    val_metrics[metric.__name__][epoch] = metric(
                         epoch_val_labels, epoch_val_preds
                     )
 
+                # loss at epoch level
+                val_loss = val_loss / (len(val_iterator) * val_iterator.batch_size)
+
         if val_iterator:
-            return train_metrics, val_metrics
+            return train_loss, train_metrics, val_loss, val_metrics
         else:
-            return train_metrics
+            return train_loss, train_metrics
 
     def predict(self, eval_iterator: DataLoader, verbose: bool = True):
 

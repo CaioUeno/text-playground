@@ -3,7 +3,6 @@ from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.processors import TemplateProcessing
-from torch import tensor
 
 
 class SimpleTokenizer(object):
@@ -52,7 +51,10 @@ class SimpleTokenizer(object):
         """
 
         self.tokenizer.train_from_iterator(
-            texts, BpeTrainer(special_tokens=self.special_tokens)
+            texts,
+            BpeTrainer(
+                special_tokens=self.special_tokens,
+            ),
         )
 
         if padding:
@@ -82,7 +84,7 @@ class SimpleTokenizer(object):
 
         Arguments:
             text: single sentence.
-        
+
         Returns:
             list: if only_ids=True then returns a list with tokens' ids;
             dict: if only_ids=False then returns a dict with tokens' ids and masks.

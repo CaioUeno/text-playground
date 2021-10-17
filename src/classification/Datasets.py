@@ -43,7 +43,7 @@ class TorchSimpleTextDataset(Dataset):
             # not necessarily text (a string) anymore
             # just to avoid a new variable declaration
             # and some checks
-            text = self.tokenizer(text)
+            text = tensor(self.tokenizer(text))
 
         if self.target_transform:
             label = self.target_transform(label)
