@@ -2,7 +2,7 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch.nn.functional as F
-from torch import cat, device, flatten, nn, no_grad, tensor
+from torch import cat, device, nn, no_grad, tensor
 from torch.cuda import is_available
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -23,7 +23,8 @@ class BaseClassifier(nn.Module):
         val_iterator: Optional[DataLoader] = None,
         epochs: int = 1,
         verbose: bool = True,
-    ) -> Tuple[int, Optional[dict], Optional[dict]]:
+    ) -> Tuple[np.array, Optional[dict], Optional[dict]]:
+
         """
         General purpose fit method.
 
@@ -42,7 +43,8 @@ class BaseClassifier(nn.Module):
         """
 
         # loss is always returned
-        train_loss = 0
+        train_loss = np.zeros(epochs)
+        val_loss = np.zeros(epochs)
 
         train_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
         val_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
@@ -50,6 +52,7 @@ class BaseClassifier(nn.Module):
         for epoch in tqdm(range(epochs), unit="epoch") if verbose else range(epochs):
 
             self.train()  # training mode
+            epoch_loss = 0
 
             epoch_train_preds = []  # store predictions of entire training set
             epoch_train_labels = []  # store true labels of entire training set
@@ -62,7 +65,7 @@ class BaseClassifier(nn.Module):
 
                 batch_loss = loss_function(preds, batch_labels.to(self.device))
                 batch_loss.backward()
-                train_loss += batch_loss.item()
+                epoch_loss += batch_loss.item()
 
                 optimizer.step()
 
@@ -81,13 +84,15 @@ class BaseClassifier(nn.Module):
                 )
 
             # loss at epoch level
-            train_loss = train_loss / (len(train_iterator) * train_iterator.batch_size)
+            train_loss[epoch] = epoch_loss / (
+                len(train_iterator) * train_iterator.batch_size
+            )
 
             # if a validation set was passed
             if val_iterator:
 
                 self.eval()  # evaluation mode
-                val_loss = 0
+                acc_val_loss = 0
 
                 epoch_val_preds = []  # store predictions of entire validation set
                 epoch_val_labels = []  # store true labels of entire validation set
@@ -95,7 +100,7 @@ class BaseClassifier(nn.Module):
                 with no_grad():
                     for batch_texts, batch_labels in val_iterator:
                         preds = self(batch_texts.to(self.device))
-                        val_loss += loss_function(
+                        acc_val_loss += loss_function(
                             preds, batch_labels.to(self.device)
                         ).item()
                         epoch_val_preds.append(preds.to("cpu"))
@@ -113,20 +118,26 @@ class BaseClassifier(nn.Module):
                     )
 
                 # loss at epoch level
-                val_loss = val_loss / (len(val_iterator) * val_iterator.batch_size)
+                val_loss[epoch] = acc_val_loss / (
+                    len(val_iterator) * val_iterator.batch_size
+                )
 
         if val_iterator:
             return train_loss, train_metrics, val_loss, val_metrics
         else:
             return train_loss, train_metrics
 
-    def predict(self, eval_iterator: DataLoader, verbose: bool = True):
+    def predict(
+        self, eval_iterator: DataLoader, verbose: bool = True
+    ) -> Tuple[np.array, np.array]:
 
         """
-        Predict data. It returns both pred and true labels to leave to the caller the evaluation metric(s).
+        General purpose predict method.
+        It returns both pred and true labels to leave to the caller the evaluation metric(s).
 
-        Argument:
+        Arguments:
             eval_iterator: DataLoader iterator with test data;
+            verbose: boolean flag to indicate verbose level (show tqdm or not);
 
         Returns:
             true_labels: true labels;
@@ -134,14 +145,18 @@ class BaseClassifier(nn.Module):
         """
 
         self.eval()  # evaluation mode
+
         n_instances = len(eval_iterator) * eval_iterator.batch_size
         true_labels, preds = np.zeros(n_instances), np.zeros(n_instances)
+
         with no_grad():
+
             for batch, (batch_texts, batch_labels) in (
                 tqdm(enumerate(eval_iterator), unit="batch")
                 if verbose
                 else enumerate(eval_iterator)
             ):
+
                 batch_preds = self(batch_texts.to(self.device))
 
                 begin_idx = batch * eval_iterator.batch_size
@@ -185,6 +200,7 @@ class BiLSTMClassifier(BaseClassifier):
         self.embedding_dim = embedding_dim
         self.padding_idx = padding_idx
 
+        # LSTM configs
         self.num_layers = num_layers
         self.hidden_size = 64  # it is changeable
         self.dropout = 0.2 if self.num_layers > 1 else 0
@@ -238,98 +254,16 @@ class BiLSTMClassifier(BaseClassifier):
             lstm_output, batch_first=True, total_length=self.max_length
         )
 
-        # concat both directions of last hidden states [batch, seq_len, lstm_hidden_size * 2] (two last positions)
+        # concat last hidden states of both directions [batch, seq_len, lstm_hidden_size * 2] (two last positions)
         hidden_concat = cat((lstm_output[:, :, -1], lstm_output[:, :, -2]), dim=1)
 
         return self.output(hidden_concat)
 
 
-class CNNClassifier(BaseClassifier):
-
-    """
-    Text Classifier using 2D-Convolutional layers.
-
-    Arguments:
-        vocab_size: vocabulary's size;
-        max_length: maximum length of a sentence;
-        embedding_dim: size of word embeddings;
-        padding_idx: index of padding [PAD] token;
-        num_classes: number of classes.
-    """
-
-    def __init__(
-        self,
-        vocab_size: int,
-        max_length: int,
-        embedding_dim: int,
-        padding_idx: int,
-        num_classes: int,
-    ):
-
-        super(CNNClassifier, self).__init__()
-
-        # useful variables
-        self.vocab_size = vocab_size
-        self.max_length = max_length
-        self.embedding_dim = embedding_dim
-        self.padding_idx = padding_idx
-
-        self.num_classes = num_classes
-
-        self.device = device("cuda" if is_available() else "cpu")
-
-        # layers
-        # Embedding layer
-        self.embedding = nn.Embedding(
-            num_embeddings=self.vocab_size,
-            embedding_dim=self.embedding_dim,
-            padding_idx=self.padding_idx,
-        )
-
-        # first CNN layer
-        self.first_cnn = nn.Conv2d(
-            1,
-            4,
-            kernel_size=5,
-            padding="same",
-            padding_mode="replicate",
-        )
-        self.first_drop = nn.Dropout2d(p=0.2)
-
-        # second CNN layer
-        self.second_cnn = nn.Conv2d(
-            4,
-            4,
-            kernel_size=5,
-            padding="same",
-            padding_mode="replicate",
-        )
-        self.second_drop = nn.Dropout2d(p=0.2)
-
-        # Pooling layer
-        self.pool = nn.MaxPool2d(2, 2)
-
-        # Dense layers
-        self.hidden = nn.Linear(4 * self.embedding_dim * 2, self.max_length)
-        self.output = nn.Linear(self.max_length, self.num_classes)
-
-    def forward(self, x):
-
-        embeddings = self.embedding(x).unsqueeze(1)
-
-        conved = self.pool(F.sigmoid(self.first_cnn(embeddings)))
-        dropped = self.first_drop(conved)
-        conved = self.pool(F.sigmoid(self.second_cnn(dropped)))
-        dropped = self.second_drop(conved)
-
-        hidden = F.sigmoid(self.hidden(flatten(dropped, 1)))
-        return F.softmax(self.output(hidden), dim=1)
-
-
 class TransformerClassifier(BaseClassifier):
 
     """
-    Text Classifier using a Transformer layer followed by a LSTM layer(s).
+    Text Classifier using a Transformer layer followed by a two LSTM layers.
 
     Arguments:
         vocab_size: vocabulary's size;
@@ -354,12 +288,13 @@ class TransformerClassifier(BaseClassifier):
 
         super(TransformerClassifier, self).__init__()
 
-        # useful variables
+        # configs
         self.vocab_size = vocab_size
         self.max_length = max_length
         self.embedding_dim = embedding_dim
         self.padding_idx = padding_idx
 
+        # Transformer configs
         self.nhead = nhead
         self.num_encoder_layers = num_encoder_layers
 
@@ -411,7 +346,7 @@ class TransformerClassifier(BaseClassifier):
 
         lstm_output, (hidden_state, cell_state) = self.lstm(transformered)
 
-        # concat both directions of last hidden states [batch, seq_len, hidden_size * 2] (two last positions)
+        # concat last hidden states of both directions [batch, seq_len, lstm_hidden_size * 2] (two last positions)
         hidden = cat((lstm_output[:, :, -1], lstm_output[:, :, -2]), dim=1)
 
         return self.output(hidden)
