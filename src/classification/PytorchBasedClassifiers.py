@@ -1,7 +1,6 @@
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
-import torch.nn.functional as F
 from torch import cat, device, nn, no_grad, tensor
 from torch.cuda import is_available
 from torch.utils.data import DataLoader
