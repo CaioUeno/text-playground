@@ -22,7 +22,7 @@ class BaseClassifier(nn.Module):
         val_iterator: Optional[DataLoader] = None,
         epochs: int = 1,
         verbose: bool = True,
-    ) -> Tuple[np.array, Optional[dict], Optional[dict]]:
+    ) -> Tuple[np.array, Optional[dict], np.array, Optional[dict]]:
 
         """
         General purpose fit method.
