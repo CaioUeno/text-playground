@@ -7,6 +7,64 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 
+class BaseTrainer(nn.Module):
+
+    """
+    Abstract class to define fit and predict methods.
+    """
+
+    def fit(
+        self,
+        train_iterator: DataLoader,
+        loss_function: Callable,
+        optimizer: Callable,
+        metrics: Optional[List[Callable[[tensor, tensor], tensor]]] = None,
+        val_iterator: Optional[DataLoader] = None,
+        epochs: int = 1,
+        verbose: bool = True,
+    ) -> Tuple[np.array, Optional[dict], np.array, Optional[dict]]:
+
+        for epoch in tqdm(range(epochs), unit="epoch") if verbose else range(epochs):
+
+            # training mode
+            self.train()
+            self.embedder.train()
+
+            for batch_pairs, batch_targets in train_iterator:
+
+                optimizer.zero_grad()
+                preds = self(batch_pairs)
+                print(batch_targets.type())
+                batch_loss = loss_function(preds, batch_targets)
+                batch_loss.backward()
+
+                optimizer.step()
+
+        return
+
+
+class SimilarityTrainer(BaseTrainer):
+
+    """ """
+
+    def __init__(self, embedder: nn.Module):
+
+        super(SimilarityTrainer, self).__init__()
+
+        self.embedder = embedder
+
+    def forward(self, pairs):
+
+        # same embedder for both of elements (A, B)
+        a = self.embedder(pairs[0])
+        b = self.embedder(pairs[1])
+
+        # cosine similarity between embeddings
+        cos = nn.CosineSimilarity(dim=1)
+
+        return cos(a, b).float()
+
+
 class BiLSTMEmbedder(nn.Module):
 
     """ """
@@ -62,7 +120,7 @@ class BiLSTMEmbedder(nn.Module):
         )
 
     def forward(self, x):
-
+        
         embeddings = self.embedding(x)
 
         # pack sequence to ignore padding token
@@ -86,22 +144,3 @@ class BiLSTMEmbedder(nn.Module):
         hidden_concat = cat((lstm_output[:, :, -1], lstm_output[:, :, -2]), dim=1)
 
         return self.output(hidden_concat)
-
-
-class EmbedderTrainer(nn.Module):
-
-    """ """
-
-    def __init__(self, embedder: nn.Module):
-
-        super(EmbedderTrainer, self).__init__()
-
-        self.embedder = embedder
-
-    def forward(self, pairs):
-
-        a = self.embedder(pairs[0])
-        b = self.embedder(pairs[1])
-
-        cos = nn.CosineSimilarity(dim=1)
-        return cos(a, b)

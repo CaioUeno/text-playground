@@ -20,11 +20,13 @@ class TorchEntailmentTextDataset(Dataset):
         pairs: List[Tuple[str, str]],
         similarities: List[float],
         tokenizer: Optional[Callable[[str], Any]] = None,
+        target_transform: Optional[Callable] = None,
     ):
 
         self.pairs = pairs
         self.similarities = similarities
         self.tokenizer = tokenizer
+        self.target_transform = target_transform
 
     def __len__(self):
         return len(self.pairs)
@@ -39,5 +41,8 @@ class TorchEntailmentTextDataset(Dataset):
             # and some checks
             sentence_a = tensor(self.tokenizer(sentence_a))
             sentence_b = tensor(self.tokenizer(sentence_b))
+
+        if self.target_transform:
+            similarity = self.target_transform(similarity)
 
         return (sentence_a, sentence_b), similarity
