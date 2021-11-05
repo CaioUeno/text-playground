@@ -4,6 +4,9 @@ from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.processors import TemplateProcessing
 
+from torch import tensor
+import numpy as np
+
 
 class SimpleTokenizer(object):
 
@@ -23,14 +26,12 @@ class SimpleTokenizer(object):
         max_length: int = 32,
         unk_token: str = "[UNK]",
         special_tokens: list = ["[UNK]", "[BGN]", "[END]", "[PAD]", "[MASK]"],
-        only_ids: bool = False,
     ):
 
         self.tokenizer = Tokenizer(BPE(unk_token=unk_token))
         self.tokenizer.pre_tokenizer = Whitespace()
         self.special_tokens = special_tokens
         self.max_length = max_length
-        self.only_ids = only_ids
 
     def fit(
         self,
@@ -77,28 +78,38 @@ class SimpleTokenizer(object):
                 ],
             )
 
-    def encode(self, text: str):
+    def encode(self, text: str, type: str):
 
         """
         Tokenize and encode a single text (sentence).
 
         Arguments:
-            text: single sentence.
+            text: single sentence;
+            type: array type [numpy or pytorch].
 
         Returns:
-            list: if only_ids=True then returns a list with tokens' ids;
-            dict: if only_ids=False then returns a dict with tokens' ids and masks.
+            tokenized_text: dict with tokens' ids, positions and masks .
         """
 
         encoded_text = self.tokenizer.encode(text)
 
-        if self.only_ids:
-            return encoded_text.ids
-        else:
-            return {
-                "ids": encoded_text.ids,
-                "attention_mask": encoded_text.attention_mask,
+        tokenized_text = {
+            "ids": encoded_text.ids,
+            "positions": [pos for pos, _ in enumerate(encoded_text.ids)],
+            "attention_mask": encoded_text.attention_mask,
+        }
+
+        if type == "numpy":
+            tokenized_text = {
+                key: np.array(value) for key, value in tokenized_text.items()
             }
+
+        elif type == "pytorch":
+            tokenized_text = {
+                key: tensor(value) for key, value in tokenized_text.items()
+            }
+
+        return tokenized_text
 
     def token_to_id(self, token):
         return self.tokenizer.token_to_id(token)
