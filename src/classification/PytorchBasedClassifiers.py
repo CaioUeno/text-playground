@@ -29,16 +29,18 @@ class BaseClassifier(nn.Module):
 
         Arguments:
             train_iterator: DataLoader iterator with training data;
-            val_iterator: DataLoader iterator with validation data;
-            epochs: number of epochs to train;
             loss_function: loss function to evaluate error;
             optimizer: optimizer to apply backpropagation (must already be initialized with model's parameters);
+            metrics: list of metrics to evaluate both training and validation data at epoch level;
+            val_iterator: DataLoader iterator with validation data;
+            epochs: number of epochs to train;
             verbose: boolean flag to indicate verbose level (show tqdm or not);
 
         Returns:
-            loss: numpy array with epochs' losses;
-            train_accuracy: numpy array with model's accuracy on training data for each epoch;
-            val_accuracy: numpy array with model's accuracy on validation data for each epoch if val_iterator passed.
+            train_loss: numpy array with training losses at epoch level;
+            train_metrics: dict with metrics evaluated on training;
+            val_loss: numpy array with validation losses at epoch level;
+            val_metrics: dict with metrics evaluated on validation;
         """
 
         # loss is always returned
@@ -60,7 +62,7 @@ class BaseClassifier(nn.Module):
 
                 optimizer.zero_grad()
 
-                preds = self(batch_texts.to(self.device))
+                preds = self(batch_texts)
 
                 batch_loss = loss_function(preds, batch_labels.to(self.device))
                 batch_loss.backward()
@@ -98,7 +100,7 @@ class BaseClassifier(nn.Module):
 
                 with no_grad():
                     for batch_texts, batch_labels in val_iterator:
-                        preds = self(batch_texts.to(self.device))
+                        preds = self(batch_texts)
                         acc_val_loss += loss_function(
                             preds, batch_labels.to(self.device)
                         ).item()
@@ -126,16 +128,16 @@ class BaseClassifier(nn.Module):
         else:
             return train_loss, train_metrics
 
-    def predict(
+    def evaluate(
         self, eval_iterator: DataLoader, verbose: bool = True
-    ) -> Tuple[np.array, np.array]:
+    ) -> Tuple[tensor, tensor]:
 
         """
-        General purpose predict method.
+        General purpose evaluation method.
         It returns both pred and true labels to leave to the caller the evaluation metric(s).
 
         Arguments:
-            eval_iterator: DataLoader iterator with test data;
+            eval_iterator: DataLoader iterator with evaluation data;
             verbose: boolean flag to indicate verbose level (show tqdm or not);
 
         Returns:
@@ -145,26 +147,21 @@ class BaseClassifier(nn.Module):
 
         self.eval()  # evaluation mode
 
-        n_instances = len(eval_iterator) * eval_iterator.batch_size
-        true_labels, preds = np.zeros(n_instances), np.zeros(n_instances)
+        # store all true labels and predictions
+        true_labels, preds = [], []
 
         with no_grad():
 
-            for batch, (batch_texts, batch_labels) in (
-                tqdm(enumerate(eval_iterator), unit="batch")
-                if verbose
-                else enumerate(eval_iterator)
+            for (batch_texts, batch_labels) in (
+                tqdm(eval_iterator, unit="batch") if verbose else eval_iterator
             ):
 
-                batch_preds = self(batch_texts.to(self.device))
+                batch_preds = self(batch_texts)
 
-                begin_idx = batch * eval_iterator.batch_size
-                last_idx = begin_idx + len(batch_texts)
+                true_labels.append(batch_labels)
+                preds.append(batch_preds)
 
-                preds[begin_idx:last_idx] = batch_preds.argmax(1)
-                true_labels[begin_idx:last_idx] = batch_labels
-
-        return true_labels, preds
+        return cat(true_labels, 0), cat(preds, 0)
 
 
 class BiLSTMClassifier(BaseClassifier):
@@ -209,8 +206,15 @@ class BiLSTMClassifier(BaseClassifier):
         self.device = device("cuda" if is_available() else "cpu")
 
         # layers
-        # Embedding layer
-        self.embedding = nn.Embedding(
+        # Word Embedding layer
+        self.word_embedding = nn.Embedding(
+            num_embeddings=self.vocab_size,
+            embedding_dim=self.embedding_dim,
+            padding_idx=self.padding_idx,
+        )
+
+        # Positional Embedding layer - same configs as word embedding layer
+        self.pos_embedding = nn.Embedding(
             num_embeddings=self.vocab_size,
             embedding_dim=self.embedding_dim,
             padding_idx=self.padding_idx,
@@ -232,16 +236,25 @@ class BiLSTMClassifier(BaseClassifier):
             self.num_classes,
         )
 
-    def forward(self, x):
+    def forward(self, x: dict):
 
-        embeddings = self.embedding(x)
+        # unpack x and put on correct device
+        ids, positions, attention_mask = (
+            x["ids"].to(self.device),
+            x["positions"].to(self.device),
+            x["attention_mask"].to(self.device),
+        )
+
+        word_embeddings = self.word_embedding(ids)
+        pos_embeddings = self.pos_embedding(positions)
+
+        # sum word embedding and positional embeddings
+        summed_embeddings = word_embeddings + pos_embeddings
 
         # pack sequence to ignore padding token
         packed_x = nn.utils.rnn.pack_padded_sequence(
-            embeddings,
-            lengths=(x != self.padding_idx)
-            .sum(1)
-            .to("cpu"),  # length of each sentence in the batch must be in cpu
+            summed_embeddings,
+            lengths=attention_mask.sum(1).to("cpu"),
             batch_first=True,
             enforce_sorted=False,
         )
@@ -302,8 +315,15 @@ class TransformerClassifier(BaseClassifier):
         self.device = device("cuda" if is_available() else "cpu")
 
         # layers
-        # Embedding layer
-        self.embedding = nn.Embedding(
+        # Word Embedding layer
+        self.word_embedding = nn.Embedding(
+            num_embeddings=self.vocab_size,
+            embedding_dim=self.embedding_dim,
+            padding_idx=self.padding_idx,
+        )
+
+        # Positional Embedding layer - same configs as word embedding layer
+        self.pos_embedding = nn.Embedding(
             num_embeddings=self.vocab_size,
             embedding_dim=self.embedding_dim,
             padding_idx=self.padding_idx,
@@ -332,15 +352,26 @@ class TransformerClassifier(BaseClassifier):
             self.max_length * 2, self.num_classes
         )  # double neurons because bidirectional=True
 
-    def forward(self, x):
+    def forward(self, x: dict):
 
-        embeddings = self.embedding(x)
+        # unpack x and put on correct device
+        ids, positions, attention_mask = (
+            x["ids"].to(self.device),
+            x["positions"].to(self.device),
+            x["attention_mask"].to(self.device),
+        )
+
+        word_embeddings = self.word_embedding(ids)
+        pos_embeddings = self.pos_embedding(positions)
+
+        # sum word embedding and positional embeddings
+        summed_embeddings = word_embeddings + pos_embeddings
 
         transformered = self.transformer(
-            embeddings,
-            embeddings,
-            src_key_padding_mask=(x != self.padding_idx),
-            tgt_key_padding_mask=(x != self.padding_idx),
+            summed_embeddings,
+            summed_embeddings,
+            src_key_padding_mask=attention_mask,
+            tgt_key_padding_mask=attention_mask,
         )
 
         lstm_output, (hidden_state, cell_state) = self.lstm(transformered)
