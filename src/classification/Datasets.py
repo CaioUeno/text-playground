@@ -1,4 +1,4 @@
-from typing import Any, Callable, List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 # import numpy as np
 # from tensorflow.keras.utils import Sequence
@@ -6,10 +6,10 @@ from torch import tensor
 from torch.utils.data import Dataset
 
 
-class TorchSimpleTextDataset(Dataset):
+class TorchTextDataset(Dataset):
 
     """
-    Simple Dataset object for text (pytorch based).
+    Dataset class for text (pytorch based).
     Reference: https://pytorch.org/tutorials/beginner/basics/data_tutorial.html#creating-a-custom-dataset-for-your-files
 
     Arguments:
@@ -22,9 +22,9 @@ class TorchSimpleTextDataset(Dataset):
     def __init__(
         self,
         texts: List[str],
-        labels: List[Union[str, int]],
-        tokenizer: Optional[Callable[[str], Any]] = None,
-        target_transform: Optional[Callable] = None,
+        labels: List[Union[int, List[int]]] = None,
+        tokenizer: Optional[Callable[[str], dict]] = None,
+        target_transform: Optional[Callable[[Union[int, List[int]]], tensor]] = None,
     ):
 
         self.texts = texts
@@ -37,18 +37,21 @@ class TorchSimpleTextDataset(Dataset):
 
     def __getitem__(self, idx):
 
-        text, label = self.texts[idx], self.labels[idx]
+        text = self.texts[idx]
+        text_transformed = self.tokenizer(text, "pytorch") if self.tokenizer else text
 
-        if self.tokenizer:
-            # not necessarily text (a string) anymore
-            # just to avoid a new variable declaration
-            # and some checks
-            text = tensor(self.tokenizer(text))
+        # labels are optional because
+        # you may want to simply classify unlabeled texts
+        if not self.labels:
+            return text_transformed
 
-        if self.target_transform:
-            label = self.target_transform(label)
+        else:
+            label = self.labels[idx]
+            label_transformed = (
+                self.target_transform(label) if self.target_transform else label
+            )
 
-        return text, label
+            return text_transformed, label_transformed
 
 
 # class TFSimpleTextDataset(Sequence):
