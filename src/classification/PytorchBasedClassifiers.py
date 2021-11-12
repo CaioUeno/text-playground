@@ -163,6 +163,38 @@ class BaseClassifier(nn.Module):
 
         return cat(true_labels, 0), cat(preds, 0)
 
+    def predict(
+        self, pred_iterator: DataLoader, verbose: bool = True
+    ) -> Tuple[tensor, tensor]:
+
+        """
+        General purpose evaluation method.
+        It returns only predicted labels.
+
+        Arguments:
+            pred_iterator: DataLoader iterator with evaluation data;
+            verbose: boolean flag to indicate verbose level (show tqdm or not);
+
+        Returns:
+            preds: predicted labels.
+        """
+
+        self.eval()  # evaluation mode
+
+        # store all predictions
+        preds = []
+
+        with no_grad():
+
+            for batch_texts in (
+                tqdm(pred_iterator, unit="batch") if verbose else pred_iterator
+            ):
+
+                batch_preds = self(batch_texts)
+                preds.append(batch_preds)
+
+        return cat(preds, 0)
+
 
 class BiLSTMClassifier(BaseClassifier):
 
@@ -211,6 +243,7 @@ class BiLSTMClassifier(BaseClassifier):
             num_embeddings=self.vocab_size,
             embedding_dim=self.embedding_dim,
             padding_idx=self.padding_idx,
+            device=self.device,
         )
 
         # Positional Embedding layer - same configs as word embedding layer
@@ -218,6 +251,7 @@ class BiLSTMClassifier(BaseClassifier):
             num_embeddings=self.vocab_size,
             embedding_dim=self.embedding_dim,
             padding_idx=self.padding_idx,
+            device=self.device,
         )
 
         # LSTM layer
@@ -228,12 +262,14 @@ class BiLSTMClassifier(BaseClassifier):
             batch_first=True,
             bidirectional=True,
             dropout=self.dropout,
+            device=self.device,
         )
 
         # Dense layer
         self.output = nn.Linear(
             self.max_length * 2,  # double neurons because bidirectional=True
             self.num_classes,
+            device=self.device,
         )
 
     def forward(self, x: dict):
@@ -320,6 +356,7 @@ class TransformerClassifier(BaseClassifier):
             num_embeddings=self.vocab_size,
             embedding_dim=self.embedding_dim,
             padding_idx=self.padding_idx,
+            device=self.device,
         )
 
         # Positional Embedding layer - same configs as word embedding layer
@@ -327,6 +364,7 @@ class TransformerClassifier(BaseClassifier):
             num_embeddings=self.vocab_size,
             embedding_dim=self.embedding_dim,
             padding_idx=self.padding_idx,
+            device=self.device,
         )
 
         # Transformer layer
@@ -335,6 +373,7 @@ class TransformerClassifier(BaseClassifier):
             nhead=self.nhead,
             num_encoder_layers=self.num_encoder_layers,
             batch_first=True,
+            device=self.device,
         )
 
         # LSTM layer
@@ -345,11 +384,12 @@ class TransformerClassifier(BaseClassifier):
             batch_first=True,
             bidirectional=True,
             dropout=0.2,
+            device=self.device,
         )
 
         # Dense layer
         self.output = nn.Linear(
-            self.max_length * 2, self.num_classes
+            self.max_length * 2, self.num_classes, device=self.device
         )  # double neurons because bidirectional=True
 
     def forward(self, x: dict):
