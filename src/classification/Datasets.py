@@ -1,7 +1,7 @@
 from typing import Callable, List, Optional, Union
 
-# import numpy as np
-# from tensorflow.keras.utils import Sequence
+import numpy as np
+from tensorflow.keras.utils import Sequence
 from torch import tensor
 from torch.utils.data import Dataset
 
@@ -38,67 +38,68 @@ class TorchTextDataset(Dataset):
     def __getitem__(self, idx):
 
         text = self.texts[idx]
-        text_transformed = self.tokenizer(text, "pytorch") if self.tokenizer else text
+        transformed_text = self.tokenizer(text, "pytorch") if self.tokenizer else text
 
         # labels are optional because
         # you may want to simply classify unlabeled texts
         if not self.labels:
-            return text_transformed
+            return transformed_text
 
         else:
             label = self.labels[idx]
-            label_transformed = (
+            transformed_label = (
                 self.target_transform(label) if self.target_transform else label
             )
 
-            return text_transformed, label_transformed
+            return transformed_text, transformed_label
 
 
-# class TFSimpleTextDataset(Sequence):
+class TensorflowTextDataset(Sequence):
 
-#     """
-#     Simple Dataset object for text (tensorflow based).
-#     Reference: https://www.tensorflow.org/api_docs/python/tf/keras/utils/Sequence
+    """
+    Simple Dataset object for text (tensorflow based).
+    Reference: https://www.tensorflow.org/api_docs/python/tf/keras/utils/Sequence
 
-#     Arguments:
-#         texts: list of texts;
-#         labels: list of labels;
-#         tokenizer: tokenizer function;
-#         target_transform: function to apply on raw label;
-#     """
+    Arguments:
+        texts: list of texts;
+        labels: list of labels;
+        tokenizer: tokenizer function;
+        target_transform: function to apply on raw label;
+    """
 
-#     def __init__(
-#         self,
-#         texts: list,
-#         labels: list,
-#         batch_size: int = 32,
-#         tokenizer=None,
-#         target_transform=None,
-#     ):
-#         self.texts = texts
-#         self.labels = labels
-#         self.tokenizer = tokenizer
-#         self.target_transform = target_transform
-#         self.batch_size = batch_size
+    def __init__(
+        self,
+        texts: list,
+        labels: list,
+        batch_size: int = 32,
+        tokenizer: Optional[Callable[[str], dict]] = None,
+        target_transform: Optional[Callable[[Union[int, List[int]]], tensor]] = None,
+    ):
 
-#     def __len__(self):
-#         return int(np.ceil(len(self.texts) / self.batch_size))
+        self.texts = texts
+        self.labels = labels
+        self.tokenizer = tokenizer
+        self.target_transform = target_transform
+        self.batch_size = batch_size
 
-#     def __getitem__(self, idx):
+    def __len__(self):
+        return int(np.ceil(len(self.texts) / self.batch_size))
 
-#         start_idx = idx * self.batch_size
-#         end_idx = start_idx + self.batch_size
+    def __getitem__(self, idx):
 
-#         batch_texts = self.texts[start_idx:end_idx]
-#         batch_labels = self.labels[start_idx:end_idx]
+        start_idx = idx * self.batch_size
+        end_idx = start_idx + self.batch_size
 
-#         if self.tokenizer:
-#             batch_texts = [self.tokenizer.encode(text) for text in batch_texts]
+        batch_texts = self.texts[start_idx:end_idx]
+        batch_labels = self.labels[start_idx:end_idx]
 
-#         if self.target_transform:
-#             batch_labels = [self.target_transform(label) for label in batch_labels]
+        if self.tokenizer:
+            batch_texts = [self.tokenizer(text, "numpy") for text in batch_texts]
 
-#         return np.array(batch_texts), np.array(batch_labels)
+        if self.target_transform:
+            batch_labels = [self.target_transform(label) for label in batch_labels]
+
+        return np.array(batch_texts), np.array(batch_labels)
 
 
 class HFSimpleTextDataset(Dataset):
