@@ -311,7 +311,7 @@ class BiLSTMClassifier(BaseClassifier):
 class TransformerClassifier(BaseClassifier):
 
     """
-    Text Classifier using a Transformer layer followed by a two LSTM layers.
+    Text Classifier using a Transformer layer followed by two LSTM layers.
 
     Arguments:
         vocab_size: vocabulary's size;
