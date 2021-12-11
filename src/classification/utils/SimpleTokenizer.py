@@ -100,9 +100,9 @@ class SimpleTokenizer(object):
         }
 
         if type == "numpy":
-            tokenized_text = {
-                key: np.array(value) for key, value in tokenized_text.items()
-            }
+            tokenized_text = np.stack(
+                [np.array(value) for _, value in tokenized_text.items()]
+            )
 
         elif type == "pytorch":
             tokenized_text = {
