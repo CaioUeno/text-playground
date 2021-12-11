@@ -1,5 +1,9 @@
+import numpy as np
 from tensorflow.keras import Model
-from tensorflow.keras.layers import Embedding, LSTM, Concatenate, Dense
+from tensorflow.keras.layers import LSTM, Concatenate, Dense, Embedding
+from tensorflow.python.ops.numpy_ops import np_config
+
+np_config.enable_numpy_behavior()
 
 
 class BiLSTMClassifier(Model):
@@ -58,21 +62,29 @@ class BiLSTMClassifier(Model):
             mask_zero=False,
         )
 
-        # Foward LSTM
-        self.forward_lstm = LSTM(
-            self.hidden_size,
-            dropout=self.dropout,
-            return_sequences=True,
-            go_backwards=False,
-        )
+        # Foward LSTM layers list
+        self.forward_lstm_list = [
+            LSTM(
+                self.hidden_size,
+                dropout=self.dropout,
+                return_sequences=True,
+                return_state=True,
+                go_backwards=False,
+            )
+            for _ in range(self.num_layers)
+        ]
 
-        # Backward LSTM
-        self.forward_lstm = LSTM(
-            self.hidden_size,
-            dropout=self.dropout,
-            return_sequences=True,
-            go_backwards=False,
-        )
+        # Backward LSTM layers list
+        self.backward_lstm_list = [
+            LSTM(
+                self.hidden_size,
+                dropout=self.dropout,
+                return_sequences=True,
+                return_state=True,
+                go_backwards=True,
+            )
+            for _ in range(self.num_layers)
+        ]
 
         # Concatenate layer
         self.concat = Concatenate(axis=1)
@@ -80,13 +92,13 @@ class BiLSTMClassifier(Model):
         # Dense layer
         self.dense = Dense(self.num_classes, activation="softmax")
 
-    def call(self, x: dict, training=False):
+    def call(self, x: np.array, training=False):
 
-        # unpack x and put on correct device
+        # unpack x
         ids, positions, attention_mask = (
-            x["ids"],
-            x["positions"],
-            x["attention_mask"],
+            x[:, 0, :],
+            x[:, 1, :],
+            x[:, 2, :],
         )
 
         word_embeddings = self.word_embedding(ids)
@@ -96,44 +108,32 @@ class BiLSTMClassifier(Model):
         summed_embeddings = word_embeddings + pos_embeddings
 
         # foward lstm loop
-        for i in range(self.num_layers):
-
-            # forward_lstm_output = self.forward_lstm(
-            #     summed_embeddings if i == 0 else forward_lstm_output
-            # )
-
-            if i == 0:
-                forward_lstm_output = self.forward_lstm(
-                    summed_embeddings, mask=attention_mask, training=training
-                )
-
-            else:
-                forward_lstm_output = self.forward_lstm(
-                    forward_lstm_output, mask=attention_mask, training=training
-                )
+        forward_lstm_output, _, _ = self.forward_lstm_list[0](
+            summed_embeddings, mask=attention_mask.astype(bool), training=training
+        )
+        for idx, lstm_layer in enumerate(self.forward_lstm_list):
+            if idx == 0:
+                continue
+            forward_lstm_output, _, _ = lstm_layer(
+                forward_lstm_output, mask=attention_mask.astype(bool), training=training
+            )
 
         # backward lstm loop
-        for i in range(self.num_layers):
-
-            # whole_seq_output = self.forward_lstm(
-            #     summed_embeddings if i == 0 else whole_seq_output
-            # )
-
-            if i == 0:
-                backward_lstm_output = self.forward_lstm(
-                    summed_embeddings, mask=attention_mask, training=training
-                )
-
-            else:
-                backward_lstm_output = self.forward_lstm(
-                    backward_lstm_output, mask=attention_mask, training=training
-                )
+        backward_lstm_output, _, _ = self.backward_lstm_list[0](
+            summed_embeddings, mask=attention_mask.astype(bool), training=training
+        )
+        for idx, lstm_layer in enumerate(self.backward_lstm_list):
+            if idx == 0:
+                continue
+            backward_lstm_output, _, _ = lstm_layer(
+                backward_lstm_output,
+                mask=attention_mask.astype(bool),
+                training=training,
+            )
 
         bidirectional_lstm_output = self.concat(
             [forward_lstm_output, backward_lstm_output]
         )
 
-        x = self.dense(bidirectional_lstm_output)
-        if training:
-            x = self.dropout(x, training=training)
-        return self.dense2(x)
+        # return last memory state (batch_size, states, features)
+        return self.dense(bidirectional_lstm_output)[:, -1, :]
