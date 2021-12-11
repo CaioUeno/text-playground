@@ -94,7 +94,9 @@ class TensorflowTextDataset(Sequence):
         batch_labels = self.labels[start_idx:end_idx]
 
         if self.tokenizer:
-            batch_texts = [self.tokenizer(text, "numpy") for text in batch_texts]
+            batch_texts = np.stack(
+                [self.tokenizer(text, "numpy") for text in batch_texts]
+            )
 
         if self.target_transform:
             batch_labels = [self.target_transform(label) for label in batch_labels]
