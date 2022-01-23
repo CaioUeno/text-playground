@@ -8,7 +8,7 @@ from torch import tensor
 import numpy as np
 
 
-class SimpleTokenizer(object):
+class SimpleTokenizer:
 
     """
     Simple sentence tokenizer using hugginface tokenizers library.

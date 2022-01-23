@@ -15,7 +15,7 @@ from transformers import (
 from Datasets import HFSimpleTextDataset
 
 
-class HFBasedTextClassifier(object):
+class HFBasedTextClassifier:
 
     """
     General Purpose Text Classifier based on Hugging Face library.
