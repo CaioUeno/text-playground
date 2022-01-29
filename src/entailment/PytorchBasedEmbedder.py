@@ -3,6 +3,8 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 from torch import cat, device, nn, no_grad, reshape, tensor
 from torch.cuda import is_available
+from torch.nn.modules.loss import _Loss
+from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -10,14 +12,14 @@ from tqdm import tqdm
 class BaseTrainer(nn.Module):
 
     """
-    Abstract class to define fit and predict methods.
+    Base class to define fit and predict methods.
     """
 
     def fit(
         self,
         train_iterator: DataLoader,
-        loss_function: Callable,
-        optimizer: Callable,
+        loss_function: _Loss,
+        optimizer: Optimizer,
         metrics: Optional[List[Callable[[tensor, tensor], tensor]]] = [],
         val_iterator: Optional[DataLoader] = None,
         epochs: int = 1,
@@ -28,68 +30,91 @@ class BaseTrainer(nn.Module):
         train_loss = np.zeros(epochs)
         val_loss = np.zeros(epochs)
 
+        # dict containing metrics values for each epoch
         train_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
         val_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
 
+        # iterate over epochs - main loop
         for epoch in tqdm(range(epochs), unit="epoch") if verbose else range(epochs):
 
             # training mode
             self.train()
             self.embedder.train()
 
+            # initialize epoch loss
             epoch_loss = 0
 
-            epoch_train_preds = []  # store predictions of entire training set
-            epoch_train_labels = []  # store true labels of entire training set
+            # store predictions and targets of entire training set
+            epoch_train_preds = []
+            epoch_train_targets = []
 
+            # iterate over batches
             for batch_pairs, batch_targets in train_iterator:
 
                 optimizer.zero_grad()
+
                 preds = self(batch_pairs)
+
                 batch_loss = loss_function(preds, batch_targets)
                 batch_loss.backward()
+
+                # sum batch loss on epoch loss
                 epoch_loss += batch_loss.item()
 
                 optimizer.step()
+
                 epoch_train_preds.append(preds.to("cpu"))
-                epoch_train_labels.append(batch_targets.to("cpu"))
+                epoch_train_targets.append(batch_targets.to("cpu"))
 
-
-            # loss at epoch level
+            # training loss at epoch level - average
             train_loss[epoch] = epoch_loss / (
                 len(train_iterator) * train_iterator.batch_size
             )
 
             # list -> tensor
             epoch_train_preds = cat(epoch_train_preds, dim=0)
-            epoch_train_labels = cat(epoch_train_labels, dim=0)
+            epoch_train_targets = cat(epoch_train_targets, dim=0)
 
             # calculate each metric value at epoch level
             # ignored if no metrics
             for metric in metrics:
                 train_metrics[metric.__name__][epoch] = metric(
-                    epoch_train_labels, epoch_train_preds
+                    epoch_train_targets, epoch_train_preds
                 )
 
-            # if a validation set was passed
+            # if a validation set is passed
             if val_iterator:
 
-                self.eval()  # evaluation mode
+                # evaluation mode
+                self.eval()
                 self.embedder.eval()
-                
-                acc_val_loss = 0
 
-                epoch_val_preds = []  # store predictions of entire validation set
-                epoch_val_labels = []  # store true labels of entire validation set
+                # initalize validation loss
+                cumulative_val_loss = 0
 
+                # store predictions and true targets of entire validation set
+                epoch_val_preds = []
+                epoch_val_targets = []
+
+                # no grad disables gradient calculation
                 with no_grad():
-                    for batch_texts, batch_labels in val_iterator:
+
+                    # iterate over batches
+                    for batch_texts, batch_targets in val_iterator:
+
                         preds = self(batch_texts)
-                        acc_val_loss += loss_function(
-                            preds, batch_labels.to(self.device)
-                        ).item()
+
+                        batch_loss = loss_function(preds, batch_targets.to(self.device))
+
+                        cumulative_val_loss += batch_loss.item()
+
                         epoch_val_preds.append(preds.to("cpu"))
-                        epoch_val_labels.append(batch_labels.to("cpu"))
+                        epoch_val_targets.append(batch_targets.to("cpu"))
+
+                # validation loss at epoch level
+                val_loss[epoch] = cumulative_val_loss / (
+                    len(val_iterator) * val_iterator.batch_size
+                )
 
                 # list -> tensor
                 epoch_val_preds = cat(epoch_val_preds, dim=0)
@@ -101,11 +126,6 @@ class BaseTrainer(nn.Module):
                     val_metrics[metric.__name__][epoch] = metric(
                         epoch_val_labels, epoch_val_preds
                     )
-
-                # loss at epoch level
-                val_loss[epoch] = acc_val_loss / (
-                    len(val_iterator) * val_iterator.batch_size
-                )
 
         if val_iterator:
             return train_loss, train_metrics, val_loss, val_metrics
