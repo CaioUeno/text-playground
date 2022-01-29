@@ -1,7 +1,7 @@
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
-from torch import cat, device, nn, no_grad, tensor
+from torch import cat, device, nn, no_grad, reshape, tensor
 from torch.cuda import is_available
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -18,11 +18,18 @@ class BaseTrainer(nn.Module):
         train_iterator: DataLoader,
         loss_function: Callable,
         optimizer: Callable,
-        metrics: Optional[List[Callable[[tensor, tensor], tensor]]] = None,
+        metrics: Optional[List[Callable[[tensor, tensor], tensor]]] = [],
         val_iterator: Optional[DataLoader] = None,
         epochs: int = 1,
         verbose: bool = True,
     ) -> Tuple[np.array, Optional[dict], np.array, Optional[dict]]:
+
+        # loss is always returned
+        train_loss = np.zeros(epochs)
+        val_loss = np.zeros(epochs)
+
+        train_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
+        val_metrics = {metric.__name__: np.zeros(epochs) for metric in metrics}
 
         for epoch in tqdm(range(epochs), unit="epoch") if verbose else range(epochs):
 
@@ -30,17 +37,80 @@ class BaseTrainer(nn.Module):
             self.train()
             self.embedder.train()
 
+            epoch_loss = 0
+
+            epoch_train_preds = []  # store predictions of entire training set
+            epoch_train_labels = []  # store true labels of entire training set
+
             for batch_pairs, batch_targets in train_iterator:
 
                 optimizer.zero_grad()
                 preds = self(batch_pairs)
-                print(batch_targets.type())
                 batch_loss = loss_function(preds, batch_targets)
                 batch_loss.backward()
+                epoch_loss += batch_loss.item()
 
                 optimizer.step()
+                epoch_train_preds.append(preds.to("cpu"))
+                epoch_train_labels.append(batch_targets.to("cpu"))
 
-        return
+
+            # loss at epoch level
+            train_loss[epoch] = epoch_loss / (
+                len(train_iterator) * train_iterator.batch_size
+            )
+
+            # list -> tensor
+            epoch_train_preds = cat(epoch_train_preds, dim=0)
+            epoch_train_labels = cat(epoch_train_labels, dim=0)
+
+            # calculate each metric value at epoch level
+            # ignored if no metrics
+            for metric in metrics:
+                train_metrics[metric.__name__][epoch] = metric(
+                    epoch_train_labels, epoch_train_preds
+                )
+
+            # if a validation set was passed
+            if val_iterator:
+
+                self.eval()  # evaluation mode
+                self.embedder.eval()
+                
+                acc_val_loss = 0
+
+                epoch_val_preds = []  # store predictions of entire validation set
+                epoch_val_labels = []  # store true labels of entire validation set
+
+                with no_grad():
+                    for batch_texts, batch_labels in val_iterator:
+                        preds = self(batch_texts)
+                        acc_val_loss += loss_function(
+                            preds, batch_labels.to(self.device)
+                        ).item()
+                        epoch_val_preds.append(preds.to("cpu"))
+                        epoch_val_labels.append(batch_labels.to("cpu"))
+
+                # list -> tensor
+                epoch_val_preds = cat(epoch_val_preds, dim=0)
+                epoch_val_labels = cat(epoch_val_labels, dim=0)
+
+                # calculate each metric value for the entire validation set
+                # ignored if no metrics
+                for metric in metrics:
+                    val_metrics[metric.__name__][epoch] = metric(
+                        epoch_val_labels, epoch_val_preds
+                    )
+
+                # loss at epoch level
+                val_loss[epoch] = acc_val_loss / (
+                    len(val_iterator) * val_iterator.batch_size
+                )
+
+        if val_iterator:
+            return train_loss, train_metrics, val_loss, val_metrics
+        else:
+            return train_loss, train_metrics
 
 
 class SimilarityTrainer(BaseTrainer):
@@ -62,7 +132,7 @@ class SimilarityTrainer(BaseTrainer):
         # cosine similarity between embeddings
         cos = nn.CosineSimilarity(dim=1)
 
-        return cos(a, b).float()
+        return reshape(cos(a, b), (-1, 1))
 
 
 class BiLSTMEmbedder(nn.Module):
@@ -120,7 +190,7 @@ class BiLSTMEmbedder(nn.Module):
         )
 
     def forward(self, x):
-        
+
         embeddings = self.embedding(x)
 
         # pack sequence to ignore padding token
