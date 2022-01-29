@@ -10,7 +10,7 @@ from tqdm import tqdm
 class BaseClassifier(nn.Module):
 
     """
-    Abstract class to define fit and predict methods.
+    Base class to define fit and predict methods.
     """
 
     def fit(
@@ -18,7 +18,7 @@ class BaseClassifier(nn.Module):
         train_iterator: DataLoader,
         loss_function: Callable,
         optimizer: Callable,
-        metrics: Optional[List[Callable[[tensor, tensor], tensor]]] = None,
+        metrics: Optional[List[Callable[[tensor, tensor], tensor]]] = [],
         val_iterator: Optional[DataLoader] = None,
         epochs: int = 1,
         verbose: bool = True,
